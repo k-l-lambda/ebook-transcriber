@@ -1,0 +1,24 @@
+[project]
+name = "ebook-transcriber"
+version = "0.1.0"
+description = "Convert PDF pages to Markdown using an LLM vision/OCR API"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf>=1.24",
+    "pillow>=10.0",
+    "openai>=1.0",
+    "click>=8.0",
+    "tqdm>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+ebook-transcriber = "ebook_transcriber.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
