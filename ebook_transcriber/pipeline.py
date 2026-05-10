@@ -17,7 +17,13 @@ from .pdf_reader import (
     render_clip_to_file,
     render_page_b64,
 )
-from .prompts import IMAGE_CLASSIFY_PROMPT, IMAGE_OCR_PROMPT, PAGE_TO_MARKDOWN_PROMPT, VISION_SMOKE_PROMPT
+from .prompts import (
+    IMAGE_CLASSIFY_PROMPT,
+    IMAGE_OCR_PROMPT,
+    PAGE_TO_MARKDOWN_PROMPT,
+    VISION_SMOKE_PROMPT,
+    with_output_language,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class ConvertOptions:
     pages: str | None
     zoom: float
     jpeg_quality: int
+    output_language: str | None
     dry_run: bool
     verbose: bool
 
@@ -75,7 +82,8 @@ def convert_pdf(options: ConvertOptions) -> Path:
                 print(_inventory_line(inventory))
 
             page_image = render_page_b64(page, options.zoom, options.jpeg_quality)
-            page_markdown = client.vision_chat(PAGE_TO_MARKDOWN_PROMPT, page_image).strip()
+            page_prompt = with_output_language(PAGE_TO_MARKDOWN_PROMPT, options.output_language)
+            page_markdown = client.vision_chat(page_prompt, page_image).strip()
 
             for region in inventory.image_regions:
                 if not _significant_region(region):
@@ -83,7 +91,8 @@ def convert_pdf(options: ConvertOptions) -> Path:
                 clip_b64 = render_clip_b64(page, region.rect, options.zoom, options.jpeg_quality)
                 classification = client.vision_chat(IMAGE_CLASSIFY_PROMPT, clip_b64).strip().upper()
                 if classification.startswith("TEXT"):
-                    ocr = client.vision_chat(IMAGE_OCR_PROMPT, clip_b64).strip()
+                    ocr_prompt = with_output_language(IMAGE_OCR_PROMPT, options.output_language)
+                    ocr = client.vision_chat(ocr_prompt, clip_b64).strip()
                     if ocr:
                         page_markdown = f"{page_markdown.rstrip()}\n\n{ocr}"
                     continue

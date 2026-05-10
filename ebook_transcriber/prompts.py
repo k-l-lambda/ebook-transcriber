@@ -27,3 +27,14 @@ IMAGE_OCR_PROMPT = """OCR this cropped PDF image region into Markdown.
 Preserve line breaks, lists, tables, code formatting, formulas, and emphasis when visible.
 Do not add commentary. Output only Markdown.
 """
+
+
+def with_output_language(prompt: str, output_language: str | None) -> str:
+    if not output_language:
+        return prompt
+    return (
+        f"{prompt.rstrip()}\n\n"
+        f"Output language: translate all transcribed natural-language text to {output_language}. "
+        "Keep Markdown syntax, code identifiers, URLs, file paths, citation labels, and asset placeholders unchanged unless they are prose. "
+        "Preserve the original document structure and formatting."
+    )

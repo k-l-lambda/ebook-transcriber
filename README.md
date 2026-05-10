@@ -15,6 +15,7 @@ The code reads generic configuration keys:
 - `ASSETS_DIR`
 - `ZOOM`
 - `JPEG_QUALITY`
+- `OUTPUT_LANGUAGE`
 
 Values in `.env` may reference shell environment variables with `${NAME}` syntax, for example:
 
@@ -36,6 +37,7 @@ Useful options:
 ```bash
 python3 -m ebook_transcriber.cli convert input.pdf --dry-run --verbose
 python3 -m ebook_transcriber.cli convert input.pdf --pages 1-3 --output output/sample.md
+python3 -m ebook_transcriber.cli convert input.pdf --output-language zh --output output/book.zh.md
 ```
 
 Generated image assets are written beside the Markdown file under `assets/` by default.
