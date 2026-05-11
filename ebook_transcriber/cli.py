@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
@@ -78,6 +79,7 @@ def convert(
 @click.option("--zoom", default=lambda: env_float("ZOOM", 2.0), show_default="env ZOOM or 2.0", type=float, help="PDF render zoom factor.")
 @click.option("--jpeg-quality", default=lambda: env_int("JPEG_QUALITY", 85), show_default="env JPEG_QUALITY or 85", type=click.IntRange(1, 100), help="JPEG quality for rendered page images.")
 @click.option("--output-language", default=lambda: env_str("OUTPUT_LANGUAGE", ""), show_default="env OUTPUT_LANGUAGE or empty", help="Translate transcribed text to this language when non-empty, e.g. zh.")
+@click.option("--max-concurrency", default=lambda: env_int("MAX_CONCURRENCY", 10), show_default="env MAX_CONCURRENCY or 10", type=click.IntRange(1), help="Maximum number of segments to transcribe concurrently.")
 @click.option("--restart", is_flag=True, help="Clear each selected segment output and checkpoint before converting.")
 @click.option("--dry-run", is_flag=True, help="List segment outputs and page ranges without calling the API.")
 @click.option("--verbose", "-v", is_flag=True, help="Print per-segment and per-page progress.")
@@ -91,6 +93,7 @@ def convert_segments(
     zoom: float,
     jpeg_quality: int,
     output_language: str,
+    max_concurrency: int,
     restart: bool,
     dry_run: bool,
     verbose: bool,
@@ -104,12 +107,12 @@ def convert_segments(
         raise click.ClickException(f"segment id not found: {', '.join(sorted(missing))}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    for segment in selected:
+
+    def run_segment(segment) -> Path:
         start, end = segment.pdf_pages
         output_path = output_dir / f"{safe_segment_filename(segment.id)}.md"
-        click.echo(f"segment {segment.id}: pages {start}-{end} -> {output_path}")
-        if dry_run:
-            continue
+        if verbose:
+            click.echo(f"segment {segment.id}: pages {start}-{end} -> {output_path}")
         options = ConvertOptions(
             pdf_path=pdf_path,
             output_path=output_path,
@@ -123,10 +126,37 @@ def convert_segments(
             dry_run=False,
             verbose=verbose,
         )
-        try:
-            convert_pdf(options)
-        except Exception as exc:
-            raise click.ClickException(f"segment {segment.id} failed: {exc}") from exc
+        return convert_pdf(options)
+
+    for segment in selected:
+        start, end = segment.pdf_pages
+        output_path = output_dir / f"{safe_segment_filename(segment.id)}.md"
+        click.echo(f"segment {segment.id}: pages {start}-{end} -> {output_path}")
+    if dry_run:
+        return
+
+    worker_count = min(max_concurrency, len(selected))
+    if worker_count <= 1:
+        for segment in selected:
+            try:
+                run_segment(segment)
+            except Exception as exc:
+                raise click.ClickException(f"segment {segment.id} failed: {exc}") from exc
+        return
+
+    failures: list[str] = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {executor.submit(run_segment, segment): segment for segment in selected}
+        for future in as_completed(futures):
+            segment = futures[future]
+            try:
+                result = future.result()
+                click.echo(f"segment {segment.id} done -> {result}")
+            except Exception as exc:
+                failures.append(f"{segment.id}: {exc}")
+                click.echo(f"segment {segment.id} failed: {exc}", err=True)
+    if failures:
+        raise click.ClickException("segment failures: " + "; ".join(failures))
 
 
 if __name__ == "__main__":

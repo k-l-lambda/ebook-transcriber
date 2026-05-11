@@ -16,6 +16,7 @@ The code reads generic configuration keys:
 - `ZOOM`
 - `JPEG_QUALITY`
 - `OUTPUT_LANGUAGE`
+- `MAX_CONCURRENCY`
 
 Values in `.env` may reference shell environment variables with `${NAME}` syntax, for example:
 
@@ -51,10 +52,11 @@ Convert a PDF according to a segments YAML file containing `segments[].id` and `
 python3 -m ebook_transcriber.cli convert-segments input.pdf segments.yaml \
   --output-dir output/book_segments \
   --output-language zh \
+  --max-concurrency 10 \
   --verbose
 ```
 
-Each segment is written to `<output-dir>/<segment-id>.md`. Use `--segment <id>` to run selected segments only; repeat it for multiple segment ids.
+Each segment is written to `<output-dir>/<segment-id>.md`. Use `--segment <id>` to run selected segments only; repeat it for multiple segment ids. Segments run concurrently by default with `--max-concurrency 10`; use `--max-concurrency 1` for sequential execution.
 
 ### Segments YAML format
 
