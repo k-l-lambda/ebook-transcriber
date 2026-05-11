@@ -45,6 +45,12 @@ def _significant_region(region) -> bool:
     return region.width >= 120 and region.height >= 120 and region.rect.width >= 40 and region.rect.height >= 40
 
 
+def _covers_most_of_page(region, page: fitz.Page) -> bool:
+    page_area = page.rect.width * page.rect.height
+    region_area = region.rect.width * region.rect.height
+    return page_area > 0 and region_area / page_area >= 0.9
+
+
 def _inventory_line(inventory: PageInventory) -> str:
     return (
         f"page {inventory.page_number}: text_blocks={inventory.text_blocks} "
@@ -93,7 +99,7 @@ def convert_pdf(options: ConvertOptions) -> Path:
             page_markdown = client.vision_chat(page_prompt, page_image).strip()
 
             for region in inventory.image_regions:
-                if not _significant_region(region):
+                if not _significant_region(region) or _covers_most_of_page(region, page):
                     continue
                 clip_b64 = render_clip_b64(page, region.rect, options.zoom, options.jpeg_quality)
                 classification = client.vision_chat(IMAGE_CLASSIFY_PROMPT, clip_b64).strip().upper()

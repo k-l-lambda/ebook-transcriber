@@ -34,7 +34,8 @@ def with_output_language(prompt: str, output_language: str | None) -> str:
         return prompt
     return (
         f"{prompt.rstrip()}\n\n"
-        f"Output language: translate all transcribed natural-language text to {output_language}. "
-        "Keep Markdown syntax, code identifiers, URLs, file paths, citation labels, and asset placeholders unchanged unless they are prose. "
+        f"Output language: translate all visible prose to {output_language}. "
+        "Do not leave source-language prose untranslated, including headings, footnotes, captions, notes, quoted sentences, and parenthetical explanations. "
+        "Keep Markdown syntax, code identifiers, URLs, file paths, citation labels, proper names, bibliographic titles, music symbols, and asset placeholders unchanged. "
         "Preserve the original document structure and formatting."
     )
