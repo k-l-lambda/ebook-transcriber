@@ -113,23 +113,43 @@ def _candidate_rects(page: fitz.Page, zoom: float) -> list[fitz.Rect]:
     for y0, y1, x0, x1 in _ink_bounds_by_rows(image):
         band_width = x1 - x0 + 1
         band_height = y1 - y0 + 1
-        if band_width < image.width * 0.45 or band_height < image.height * 0.035:
+        if band_height < image.height * 0.075:
+            continue
+        if band_width < image.width * 0.30:
+            continue
+        aspect_ratio = band_width / band_height
+        if aspect_ratio > 5.5:
             continue
         pad_x = int(image.width * 0.02)
-        pad_y = int(image.height * 0.01)
+        pad_y = int(image.height * 0.012)
         rect = fitz.Rect(
             max(0, x0 - pad_x) / zoom,
             max(0, y0 - pad_y) / zoom,
             min(image.width, x1 + pad_x) / zoom,
             min(image.height, y1 + pad_y) / zoom,
         )
-        if rect.width >= page.rect.width * 0.4 and rect.height >= page.rect.height * 0.03:
+        if rect.height >= page.rect.height * 0.06:
             candidates.append(rect)
     return candidates
 
 
 def _full_page_rect(page: fitz.Page) -> fitz.Rect:
     return fitz.Rect(page.rect)
+
+
+def _union_rects(rects: list[fitz.Rect]) -> fitz.Rect:
+    return fitz.Rect(
+        min(rect.x0 for rect in rects),
+        min(rect.y0 for rect in rects),
+        max(rect.x1 for rect in rects),
+        max(rect.y1 for rect in rects),
+    )
+
+
+def _assign_rects_to_figures(rects: list[fitz.Rect], figure_count: int) -> list[fitz.Rect]:
+    if len(rects) <= figure_count:
+        return rects
+    return rects[: figure_count - 1] + [_union_rects(rects[figure_count - 1 :])]
 
 
 def crop_figures(
@@ -150,13 +170,22 @@ def crop_figures(
     doc = open_document(pdf_path)
     try:
         rects_by_page: dict[int, list[fitz.Rect]] = {}
+        anchor_counts_by_page: dict[int, int] = {}
+        for anchor in anchors:
+            anchor_counts_by_page[anchor.page_number] = anchor_counts_by_page.get(anchor.page_number, 0) + 1
+
         for anchor in anchors:
             page = doc[anchor.page_number - 1]
             if mode == "heuristic":
-                rects_by_page.setdefault(anchor.page_number, _candidate_rects(page, zoom))
+                if anchor.page_number not in rects_by_page:
+                    rects_by_page[anchor.page_number] = _assign_rects_to_figures(
+                        _candidate_rects(page, zoom), anchor_counts_by_page[anchor.page_number]
+                    )
                 page_rects = rects_by_page[anchor.page_number]
-                fallback = anchor.figure_index > len(page_rects)
-                rect = page_rects[anchor.figure_index - 1] if not fallback else _full_page_rect(page)
+                if anchor.figure_index > len(page_rects):
+                    continue
+                fallback = False
+                rect = page_rects[anchor.figure_index - 1]
             else:
                 fallback = False
                 rect = _full_page_rect(page)

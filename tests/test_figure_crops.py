@@ -1,6 +1,13 @@
+import fitz
 import unittest
 
-from ebook_transcriber.figure_crops import CropResult, FigureAnchor, parse_figure_anchors, replace_figure_lines
+from ebook_transcriber.figure_crops import (
+    CropResult,
+    FigureAnchor,
+    _assign_rects_to_figures,
+    parse_figure_anchors,
+    replace_figure_lines,
+)
 
 
 class FigureCropTests(unittest.TestCase):
@@ -55,6 +62,16 @@ text
 ![second](assets/page008_fig02.jpg)
 """,
         )
+    def test_assign_rects_to_figures_keeps_short_candidate_list(self):
+        rects = [fitz.Rect(1, 2, 3, 4), fitz.Rect(5, 6, 7, 8)]
+        self.assertEqual(_assign_rects_to_figures(rects, 3), rects)
+
+    def test_assign_rects_to_figures_merges_extra_rects_into_last_figure(self):
+        rects = [fitz.Rect(0, 0, 10, 10), fitz.Rect(20, 20, 30, 30), fitz.Rect(25, 40, 50, 60)]
+        assigned = _assign_rects_to_figures(rects, 2)
+        self.assertEqual(len(assigned), 2)
+        self.assertEqual(assigned[0], rects[0])
+        self.assertEqual(assigned[1], fitz.Rect(20, 20, 50, 60))
 
 
 if __name__ == "__main__":
