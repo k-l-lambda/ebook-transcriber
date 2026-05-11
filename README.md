@@ -43,6 +43,20 @@ python3 -m ebook_transcriber.cli convert input.pdf --output output/book.md --res
 
 Generated image assets are written beside the Markdown file under `assets/` by default.
 
+## Segment conversion
+
+Convert a PDF according to a segments YAML file containing `segments[].id` and `segments[].pdf_pages` ranges:
+
+```bash
+python3 -m ebook_transcriber.cli convert-segments input.pdf segments.yaml \
+  --output-dir output/book_segments \
+  --output-language zh \
+  --verbose
+```
+
+Each segment is written to `<output-dir>/<segment-id>.md`. Use `--segment <id>` to run selected segments only; repeat it for multiple segment ids.
+
+
 ## Checkpoints
 
 Conversion writes each completed page to the Markdown file immediately. A checkpoint file is written beside the Markdown output using the name `<output>.checkpoint.json`.
