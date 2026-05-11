@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from .config import env_float, env_int, env_str, load_project_env
+from .figure_crops import crop_figures
 from .markdown_writer import default_output_path
 from .pipeline import ConvertOptions, convert_pdf
 from .segments import read_segments, safe_segment_filename
@@ -157,6 +158,50 @@ def convert_segments(
                 click.echo(f"segment {segment.id} failed: {exc}", err=True)
     if failures:
         raise click.ClickException("segment failures: " + "; ".join(failures))
+
+
+@main.command("crop-figures")
+@click.argument("pdf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("markdown_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--assets-dir", default=lambda: env_str("ASSETS_DIR", "assets"), show_default="env ASSETS_DIR or assets", help="Assets subdirectory beside the Markdown file.")
+@click.option("--zoom", default=lambda: env_float("ZOOM", 2.0), show_default="env ZOOM or 2.0", type=float, help="PDF render zoom factor.")
+@click.option("--jpeg-quality", default=lambda: env_int("JPEG_QUALITY", 85), show_default="env JPEG_QUALITY or 85", type=click.IntRange(1, 100), help="JPEG quality for cropped figure images.")
+@click.option("--mode", type=click.Choice(["heuristic", "page"]), default="heuristic", show_default=True, help="Crop heuristic figure bands or full pages.")
+@click.option("--write", "write_markdown", is_flag=True, help="Replace [Figure: ...] lines with Markdown image links.")
+@click.option("--verbose", "-v", is_flag=True, help="Print each generated crop.")
+def crop_figures_command(
+    pdf_path: Path,
+    markdown_path: Path,
+    assets_dir: str,
+    zoom: float,
+    jpeg_quality: int,
+    mode: str,
+    write_markdown: bool,
+    verbose: bool,
+) -> None:
+    """Crop screenshots for [Figure: ...] blocks in MARKDOWN_PATH."""
+    try:
+        results = crop_figures(
+            pdf_path=pdf_path,
+            markdown_path=markdown_path,
+            assets_dir_name=assets_dir,
+            zoom=zoom,
+            jpeg_quality=jpeg_quality,
+            mode=mode,
+            write_markdown=write_markdown,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for result in results:
+        if verbose or not write_markdown:
+            note = " fallback=page" if result.fallback else ""
+            click.echo(
+                f"page {result.anchor.page_number} figure {result.anchor.figure_index} -> "
+                f"{result.asset_path}{note}"
+            )
+    action = "cropped and updated" if write_markdown else "cropped"
+    click.echo(f"{action} {len(results)} figure(s) for {markdown_path}")
 
 
 if __name__ == "__main__":

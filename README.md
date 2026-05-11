@@ -44,6 +44,17 @@ python3 -m ebook_transcriber.cli convert input.pdf --output output/book.md --res
 
 Generated image assets are written beside the Markdown file under `assets/` by default.
 
+## Figure crop post-processing
+
+For scanned PDFs where figures are baked into full-page images, the converter may emit textual figure notes such as `[Figure: Musical notation ...]` without creating `assets/`. Use `crop-figures` to post-process an existing Markdown file and crop screenshots from the source PDF using those figure notes as anchors:
+
+```bash
+python3 -m ebook_transcriber.cli crop-figures input.pdf output/chapter_08.md --mode heuristic --verbose
+python3 -m ebook_transcriber.cli crop-figures input.pdf output/chapter_08.md --mode heuristic --write --verbose
+```
+
+By default the command writes crop files but leaves Markdown unchanged. Add `--write` to replace `[Figure: ...]` lines with Markdown image links. `--mode heuristic` tries to crop figure-like page bands; use `--mode page` for reliable full-page screenshots when heuristic crops are poor.
+
 ## Segment conversion
 
 Convert a PDF according to a segments YAML file containing `segments[].id` and `segments[].pdf_pages` ranges:

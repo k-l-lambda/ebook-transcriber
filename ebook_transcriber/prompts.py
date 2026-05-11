@@ -35,7 +35,9 @@ def with_output_language(prompt: str, output_language: str | None) -> str:
     return (
         f"{prompt.rstrip()}\n\n"
         f"Output language: translate all visible prose to {output_language}. "
-        "Do not leave source-language prose untranslated, including headings, footnotes, captions, notes, quoted sentences, and parenthetical explanations. "
+        f"The final Markdown must be written in {output_language} except for the explicitly preserved items below. "
+        "This translation requirement applies to headings, body paragraphs, footnotes, captions, notes, quoted sentences, parenthetical explanations, and prose inside bibliographic notes. "
+        "Do not leave source-language sentences untranslated merely because they are quoted, footnoted, cited, or split across pages. "
         "Keep Markdown syntax, code identifiers, URLs, file paths, citation labels, proper names, bibliographic titles, music symbols, and asset placeholders unchanged. "
         "Preserve the original document structure and formatting."
     )
