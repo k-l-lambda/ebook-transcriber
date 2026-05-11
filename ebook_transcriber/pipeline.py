@@ -36,6 +36,7 @@ class ConvertOptions:
     zoom: float
     jpeg_quality: int
     output_language: str | None
+    restart: bool
     dry_run: bool
     verbose: bool
 
@@ -73,9 +74,15 @@ def convert_pdf(options: ConvertOptions) -> Path:
         client.vision_chat(VISION_SMOKE_PROMPT, smoke_image)
 
         assets_dir = markdown_writer.asset_dir_for(options.output_path, options.assets_dir_name)
-        parts: list[str] = []
+        checkpoint_path = markdown_writer.checkpoint_path_for(options.output_path)
+        completed_pages = markdown_writer.prepare_progressive_output(options.output_path, checkpoint_path, options.restart)
         iterator = tqdm(page_indexes, desc="pages") if not options.verbose else page_indexes
         for page_index in iterator:
+            page_number = page_index + 1
+            if page_number in completed_pages:
+                if options.verbose:
+                    print(f"skip page {page_number}: already completed in {checkpoint_path}")
+                continue
             page = doc[page_index]
             inventory = inspect_page(page, page_index)
             if options.verbose:
@@ -97,19 +104,22 @@ def convert_pdf(options: ConvertOptions) -> Path:
                         page_markdown = f"{page_markdown.rstrip()}\n\n{ocr}"
                     continue
 
-                asset_name = f"page{page_index + 1:03d}_img{region.index:02d}.jpg"
+                asset_name = f"page{page_number:03d}_img{region.index:02d}.jpg"
                 asset_path = assets_dir / asset_name
                 render_clip_to_file(page, region.rect, asset_path, options.zoom, options.jpeg_quality)
                 rel_path = markdown_writer.relative_asset_path(options.output_path, asset_path)
                 page_markdown = markdown_writer.replace_first_asset_placeholder(
                     page_markdown,
                     rel_path,
-                    alt=f"page {page_index + 1} image {region.index}",
+                    alt=f"page {page_number} image {region.index}",
                 )
 
-            parts.append(f"<!-- page {page_index + 1} -->\n\n{page_markdown}")
+            markdown_writer.append_page_markdown(options.output_path, page_number, page_markdown)
+            completed_pages.add(page_number)
+            markdown_writer.write_completed_pages(checkpoint_path, completed_pages)
+            if options.verbose:
+                print(f"wrote page {page_number}; checkpoint={checkpoint_path}")
 
-        markdown_writer.write_markdown(options.output_path, parts)
         return options.output_path
     finally:
         doc.close()

@@ -26,6 +26,7 @@ def main() -> None:
 @click.option("--zoom", default=lambda: env_float("ZOOM", 2.0), show_default="env ZOOM or 2.0", type=float, help="PDF render zoom factor.")
 @click.option("--jpeg-quality", default=lambda: env_int("JPEG_QUALITY", 85), show_default="env JPEG_QUALITY or 85", type=click.IntRange(1, 100), help="JPEG quality for rendered page images.")
 @click.option("--output-language", default=lambda: env_str("OUTPUT_LANGUAGE", ""), show_default="env OUTPUT_LANGUAGE or empty", help="Translate transcribed text to this language when non-empty, e.g. zh.")
+@click.option("--restart", is_flag=True, help="Clear the output Markdown and checkpoint before converting selected pages.")
 @click.option("--dry-run", is_flag=True, help="Inspect pages without calling the API.")
 @click.option("--verbose", "-v", is_flag=True, help="Print per-page progress.")
 def convert(
@@ -37,6 +38,7 @@ def convert(
     zoom: float,
     jpeg_quality: int,
     output_language: str,
+    restart: bool,
     dry_run: bool,
     verbose: bool,
 ) -> None:
@@ -51,6 +53,7 @@ def convert(
         zoom=zoom,
         jpeg_quality=jpeg_quality,
         output_language=output_language.strip() or None,
+        restart=restart,
         dry_run=dry_run,
         verbose=verbose,
     )

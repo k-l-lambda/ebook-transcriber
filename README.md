@@ -38,6 +38,13 @@ Useful options:
 python3 -m ebook_transcriber.cli convert input.pdf --dry-run --verbose
 python3 -m ebook_transcriber.cli convert input.pdf --pages 1-3 --output output/sample.md
 python3 -m ebook_transcriber.cli convert input.pdf --output-language zh --output output/book.zh.md
+python3 -m ebook_transcriber.cli convert input.pdf --output output/book.md --restart
 ```
 
 Generated image assets are written beside the Markdown file under `assets/` by default.
+
+## Checkpoints
+
+Conversion writes each completed page to the Markdown file immediately. A checkpoint file is written beside the Markdown output using the name `<output>.checkpoint.json`.
+
+If a run stops midway, rerun the same command and completed pages listed in the checkpoint are skipped. Use `--restart` to clear the Markdown output and checkpoint before converting again.
