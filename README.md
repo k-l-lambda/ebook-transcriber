@@ -56,6 +56,56 @@ python3 -m ebook_transcriber.cli convert-segments input.pdf segments.yaml \
 
 Each segment is written to `<output-dir>/<segment-id>.md`. Use `--segment <id>` to run selected segments only; repeat it for multiple segment ids.
 
+### Segments YAML format
+
+The segments file is a YAML document with optional book-level metadata and a required `segments` list. Each segment must include an `id` and a 1-based PDF page range in `pdf_pages`:
+
+```yaml
+source_pdf: "/path/to/book.pdf"
+title: "Example Book"
+author: "Example Author"
+total_pdf_pages: 120
+page_numbering_note: >-
+  Ranges use PDF page sequence numbers, counted from the cover as page 1.
+
+segments:
+  - id: cover
+    title: "Cover / title page"
+    pdf_pages: [1, 1]
+    printed_pages: null
+    type: front_matter
+
+  - id: contents
+    title: "Contents"
+    pdf_pages: [2, 4]
+    printed_pages: ["ix", "xi"]
+    type: front_matter
+
+  - id: chapter_01
+    chapter: 1
+    title: "Chapter One"
+    pdf_pages: [5, 18]
+    printed_pages: [1, 14]
+    type: chapter
+    note: "Optional notes are allowed and ignored by the converter."
+```
+
+Required segment fields:
+
+- `id`: unique segment identifier. It becomes the Markdown filename, e.g. `chapter_01` -> `chapter_01.md`.
+- `pdf_pages`: two-item inclusive range `[start, end]` using PDF sequence numbers, not necessarily printed book page numbers. Page `1` means the first page in the PDF file.
+
+Optional segment fields are allowed and ignored by the converter, including:
+
+- `title`
+- `chapter`
+- `printed_pages`
+- `type`
+- `subtitle`
+- `note`
+
+Top-level metadata such as `source_pdf`, `title`, `author`, `translator`, `total_pdf_pages`, and notes are also allowed and ignored by the converter.
+
 
 ## Checkpoints
 
