@@ -5,6 +5,7 @@ from ebook_transcriber.figure_crops import (
     CropResult,
     FigureAnchor,
     _assign_rects_to_figures,
+    _merge_relaxed_rects,
     parse_figure_anchors,
     replace_figure_lines,
 )
@@ -73,6 +74,25 @@ text
             fitz.Rect(25, 70, 50, 100),
         ]
         self.assertEqual(_assign_rects_to_figures(rects, 2), rects[1:])
+
+    def test_merge_relaxed_rects_keeps_strict_when_enough(self):
+        strict = [fitz.Rect(0, 0, 10, 20), fitz.Rect(0, 30, 10, 50)]
+        relaxed = [fitz.Rect(0, 60, 10, 90)]
+        self.assertEqual(_merge_relaxed_rects(strict, relaxed, 2), strict)
+
+    def test_merge_relaxed_rects_fills_missing_without_overlap(self):
+        strict = [fitz.Rect(0, 0, 10, 20)]
+        relaxed = [
+            fitz.Rect(0, 1, 10, 19),
+            fitz.Rect(0, 40, 10, 80),
+            fitz.Rect(0, 90, 10, 110),
+        ]
+        self.assertEqual(_merge_relaxed_rects(strict, relaxed, 2), [strict[0], relaxed[1]])
+
+    def test_merge_relaxed_rects_preserves_strict_candidates(self):
+        strict = [fitz.Rect(0, 60, 10, 70)]
+        relaxed = [fitz.Rect(0, 0, 10, 50), fitz.Rect(0, 80, 10, 120)]
+        self.assertEqual(_merge_relaxed_rects(strict, relaxed, 2), [relaxed[0], strict[0]])
 
 
 if __name__ == "__main__":

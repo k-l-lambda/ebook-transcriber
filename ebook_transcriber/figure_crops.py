@@ -45,6 +45,23 @@ class LocModelConfig:
     image_short_side: int
 
 
+@dataclass(frozen=True)
+class LocCropPass:
+    row_ink_min: float
+    row_text_max: float
+    dense_row_ink_min: float | None
+    dense_row_text_max: float | None
+    run_min_height_ratio: float
+    run_min_width_ratio: float
+    column_ink_min: float
+    cluster_gap_ratio: float
+    cluster_max_height_ratio: float
+    block_min_height_ratio: float
+    block_max_height_ratio: float
+    pad_x_ratio: float
+    pad_y_ratio: float
+
+
 def parse_figure_anchors(markdown: str) -> list[FigureAnchor]:
     anchors: list[FigureAnchor] = []
     current_page: int | None = None
@@ -250,20 +267,79 @@ def _text_heatmap_for_image(image: Image.Image, config: LocModelConfig):
     return binary_orig * keep_mask.astype(np.float32)
 
 
-def _candidate_rects_from_loc_heatmap(page: fitz.Page, zoom: float, config: LocModelConfig) -> list[fitz.Rect]:
+_STRICT_LOC_CROP_PASS = LocCropPass(
+    row_ink_min=0.0025,
+    row_text_max=0.035,
+    dense_row_ink_min=None,
+    dense_row_text_max=None,
+    run_min_height_ratio=0.016,
+    run_min_width_ratio=0.12,
+    column_ink_min=0.003,
+    cluster_gap_ratio=0.045,
+    cluster_max_height_ratio=0.23,
+    block_min_height_ratio=0.025,
+    block_max_height_ratio=0.28,
+    pad_x_ratio=0.012,
+    pad_y_ratio=0.006,
+)
+_RELAXED_LOC_CROP_PASS = LocCropPass(
+    row_ink_min=0.0025,
+    row_text_max=0.02,
+    dense_row_ink_min=0.035,
+    dense_row_text_max=0.22,
+    run_min_height_ratio=0.006,
+    run_min_width_ratio=0.08,
+    column_ink_min=0.002,
+    cluster_gap_ratio=0.030,
+    cluster_max_height_ratio=0.40,
+    block_min_height_ratio=0.012,
+    block_max_height_ratio=0.45,
+    pad_x_ratio=0.012,
+    pad_y_ratio=0.006,
+)
+
+
+def _rect_overlap_over_smaller(first: fitz.Rect, second: fitz.Rect) -> float:
+    intersection = first & second
+    if intersection.is_empty or first.is_empty or second.is_empty:
+        return 0.0
+    smaller_area = min(first.get_area(), second.get_area())
+    if smaller_area == 0:
+        return 0.0
+    return intersection.get_area() / smaller_area
+
+
+def _merge_relaxed_rects(strict_rects: list[fitz.Rect], relaxed_rects: list[fitz.Rect], expected_count: int) -> list[fitz.Rect]:
+    if len(strict_rects) >= expected_count:
+        return strict_rects
+
+    selected = list(strict_rects)
+    relaxed_only = [
+        rect
+        for rect in relaxed_rects
+        if all(_rect_overlap_over_smaller(rect, selected_rect) < 0.65 for selected_rect in selected)
+    ]
+    needed = expected_count - len(selected)
+    selected.extend(sorted(relaxed_only, key=lambda rect: rect.height, reverse=True)[:needed])
+    return sorted(selected, key=lambda rect: rect.y0)
+
+
+def _candidate_rects_from_loc_heatmap_pass(
+    page: fitz.Page,
+    image: Image.Image,
+    zoom: float,
+    ink,
+    row_ink_density,
+    row_text_density,
+    crop_pass: LocCropPass,
+) -> list[fitz.Rect]:
     import numpy as np
 
-    image = _render_page_image(page, zoom)
-    text_heat = _text_heatmap_for_image(image, config)
-    text_mask = text_heat >= 0.25
-    row_text_density = text_mask.mean(axis=1)
-    text_window = max(9, int(image.height * 0.012))
-    row_text_density = np.convolve(row_text_density, np.ones(text_window) / text_window, mode="same")
-
-    grayscale = np.asarray(image.convert("L"))
-    ink = grayscale < 235
-    row_ink_density = ink.mean(axis=1)
-    music_rows = (row_ink_density >= 0.0025) & (row_text_density <= 0.02)
+    music_rows = (row_ink_density >= crop_pass.row_ink_min) & (row_text_density <= crop_pass.row_text_max)
+    if crop_pass.dense_row_ink_min is not None and crop_pass.dense_row_text_max is not None:
+        music_rows = music_rows | (
+            (row_ink_density >= crop_pass.dense_row_ink_min) & (row_text_density <= crop_pass.dense_row_text_max)
+        )
 
     runs: list[tuple[int, int, int, int]] = []
     y = 0
@@ -278,19 +354,19 @@ def _candidate_rects_from_loc_heatmap(page: fitz.Page, zoom: float, config: LocM
             break
 
         run_height = end - start + 1
-        if run_height < max(8, int(image.height * 0.018)):
+        if run_height < max(8, int(image.height * crop_pass.run_min_height_ratio)):
             continue
         if start <= image.height * 0.03 or end >= image.height * 0.96:
             continue
 
         segment_ink = ink[start : end + 1, :]
-        ink_columns = segment_ink.mean(axis=0) > 0.003
+        ink_columns = segment_ink.mean(axis=0) > crop_pass.column_ink_min
         xs = np.flatnonzero(ink_columns)
         if len(xs) == 0:
             continue
         x0 = int(xs[0])
         x1 = int(xs[-1])
-        if x1 - x0 + 1 < image.width * 0.20:
+        if x1 - x0 + 1 < image.width * crop_pass.run_min_width_ratio:
             continue
         runs.append((start, end, x0, x1))
 
@@ -306,7 +382,7 @@ def _candidate_rects_from_loc_heatmap(page: fitz.Page, zoom: float, config: LocM
         gap = run[0] - previous[1]
         current_start = clusters[-1][0][0]
         merged_height = run[1] - current_start + 1
-        if gap <= image.height * 0.045 and merged_height <= image.height * 0.23:
+        if gap <= image.height * crop_pass.cluster_gap_ratio and merged_height <= image.height * crop_pass.cluster_max_height_ratio:
             clusters[-1].append(run)
         else:
             clusters.append([run])
@@ -318,30 +394,61 @@ def _candidate_rects_from_loc_heatmap(page: fitz.Page, zoom: float, config: LocM
         x0 = min(run[2] for run in cluster)
         x1 = max(run[3] for run in cluster)
         block_height = end - start + 1
-        if block_height < image.height * 0.025:
+        if block_height < image.height * crop_pass.block_min_height_ratio:
             continue
-        if block_height > image.height * 0.28:
+        if block_height > image.height * crop_pass.block_max_height_ratio:
             continue
         if row_text_density[start : end + 1].mean() > 0.02 and row_ink_density[start : end + 1].mean() < 0.02:
             continue
 
-        pad_x = int(image.width * 0.012)
-        pad_y = int(image.height * 0.006)
+        pad_x = int(image.width * crop_pass.pad_x_ratio)
+        pad_y = int(image.height * crop_pass.pad_y_ratio)
         rect = fitz.Rect(
             max(0, x0 - pad_x) / zoom,
             max(0, start - pad_y) / zoom,
             min(image.width, x1 + pad_x) / zoom,
             min(image.height, end + pad_y) / zoom,
         )
-        candidates.append(rect)
+        if rect.height >= page.rect.height * crop_pass.block_min_height_ratio:
+            candidates.append(rect)
     return candidates
 
 
-def _heuristic_rects(page: fitz.Page, zoom: float, loc_config: LocModelConfig | None) -> list[fitz.Rect]:
+def _candidate_rects_from_loc_heatmap(
+    page: fitz.Page, zoom: float, config: LocModelConfig, expected_count: int | None = None
+) -> list[fitz.Rect]:
+    import numpy as np
+
+    image = _render_page_image(page, zoom)
+    text_heat = _text_heatmap_for_image(image, config)
+    text_mask = text_heat >= 0.25
+    row_text_density = text_mask.mean(axis=1)
+    text_window = max(9, int(image.height * 0.012))
+    row_text_density = np.convolve(row_text_density, np.ones(text_window) / text_window, mode="same")
+
+    grayscale = np.asarray(image.convert("L"))
+    ink = grayscale < 235
+    row_ink_density = ink.mean(axis=1)
+
+    strict_rects = _candidate_rects_from_loc_heatmap_pass(
+        page, image, zoom, ink, row_ink_density, row_text_density, _STRICT_LOC_CROP_PASS
+    )
+    if expected_count is None or len(strict_rects) >= expected_count:
+        return strict_rects
+
+    relaxed_rects = _candidate_rects_from_loc_heatmap_pass(
+        page, image, zoom, ink, row_ink_density, row_text_density, _RELAXED_LOC_CROP_PASS
+    )
+    return _merge_relaxed_rects(strict_rects, relaxed_rects, expected_count)
+
+
+def _heuristic_rects(
+    page: fitz.Page, zoom: float, loc_config: LocModelConfig | None, expected_count: int | None = None
+) -> list[fitz.Rect]:
     if loc_config is None:
         return _candidate_rects_from_ink(page, zoom)
     try:
-        return _candidate_rects_from_loc_heatmap(page, zoom, loc_config)
+        return _candidate_rects_from_loc_heatmap(page, zoom, loc_config, expected_count)
     except Exception:
         return _candidate_rects_from_ink(page, zoom)
 
@@ -397,13 +504,21 @@ def crop_figures(
             if mode == "heuristic":
                 if anchor.page_number not in rects_by_page:
                     rects_by_page[anchor.page_number] = _assign_rects_to_figures(
-                        _heuristic_rects(page, zoom, loc_model_config), anchor_counts_by_page[anchor.page_number]
+                        _heuristic_rects(
+                            page,
+                            zoom,
+                            loc_model_config,
+                            anchor_counts_by_page[anchor.page_number],
+                        ),
+                        anchor_counts_by_page[anchor.page_number],
                     )
                 page_rects = rects_by_page[anchor.page_number]
                 if anchor.figure_index > len(page_rects):
-                    continue
-                fallback = False
-                rect = page_rects[anchor.figure_index - 1]
+                    fallback = True
+                    rect = _full_page_rect(page)
+                else:
+                    fallback = False
+                    rect = page_rects[anchor.figure_index - 1]
             else:
                 fallback = False
                 rect = _full_page_rect(page)
