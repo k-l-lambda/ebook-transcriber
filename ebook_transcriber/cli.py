@@ -9,7 +9,7 @@ from .config import env_float, env_int, env_str, load_project_env
 from .figure_crops import crop_figures
 from .markdown_writer import default_output_path
 from .pipeline import ConvertOptions, convert_pdf
-from .segments import read_segments, safe_segment_filename
+from .segments import read_segments, safe_segment_filename, write_index_markdown
 
 
 load_project_env()
@@ -108,6 +108,12 @@ def convert_segments(
         raise click.ClickException(f"segment id not found: {', '.join(sorted(missing))}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        index_path = write_index_markdown(output_dir, segments)
+    except FileNotFoundError as exc:
+        click.echo(f"index not written: {exc}", err=True)
+    else:
+        click.echo(f"wrote index {index_path}")
 
     def run_segment(segment) -> Path:
         start, end = segment.pdf_pages

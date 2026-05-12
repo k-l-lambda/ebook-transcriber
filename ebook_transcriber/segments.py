@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -86,3 +87,23 @@ def safe_segment_filename(segment_id: str) -> str:
     if not safe:
         raise ValueError(f"invalid segment id for filename: {segment_id!r}")
     return safe
+
+
+def write_index_markdown(output_dir: str | Path, segments: Iterable[Segment], index_name: str = "index.md") -> Path:
+    output_dir = Path(output_dir)
+    lines: list[str] = []
+    missing: list[str] = []
+    for segment in segments:
+        filename = f"{safe_segment_filename(segment.id)}.md"
+        path = output_dir / filename
+        if not path.exists():
+            missing.append(filename)
+            continue
+        title = segment.title or segment.id
+        lines.append(f"- [{title}]({filename})")
+    if missing:
+        raise FileNotFoundError("missing segment Markdown files: " + ", ".join(missing))
+
+    index_path = output_dir / index_name
+    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return index_path
