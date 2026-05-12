@@ -55,6 +55,8 @@ python3 -m ebook_transcriber.cli crop-figures input.pdf output/chapter_08.md --m
 
 By default the command writes crop files but leaves Markdown unchanged. Add `--write` to replace `[Figure: ...]` lines with Markdown image links. `--mode heuristic` tries to crop figure-like page bands; use `--mode page` for reliable full-page screenshots when heuristic crops are poor.
 
+Optional OCR localization settings can improve heuristic crops when a Starry OCR DB localization model is available. Configure `OCR_LOC_STARRY_OCR_ROOT` and `OCR_LOC_WEIGHTS_PATH` in `.env`; when either is unset, `crop-figures` falls back to the built-in ink-band heuristic. Run the tool from an environment that has both `ebook-transcriber` and the Starry OCR dependencies installed. The localization heatmap excludes instrument, alternative, and tempo classes before looking for text-sparse vertical regions.
+
 ## Segment conversion
 
 Convert a PDF according to a segments YAML file containing `segments[].id` and `segments[].pdf_pages` ranges:

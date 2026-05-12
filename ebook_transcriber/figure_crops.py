@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import math
+import os
 import re
+import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import fitz
 from PIL import Image
@@ -12,6 +17,7 @@ from .pdf_reader import open_document, render_clip_to_file
 
 _PAGE_MARKER_RE = re.compile(r"^<!--\s*page\s+(\d+)\s*-->\s*$")
 _FIGURE_RE = re.compile(r"^\[Figure:\s*(?P<description>.*?)\]\s*$")
+_EXCLUDED_LOC_CLASSES = {2, 3, 8, 11, 12}
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,14 @@ class CropResult:
     rel_path: str
     rect: fitz.Rect
     fallback: bool
+
+
+@dataclass(frozen=True)
+class LocModelConfig:
+    starry_ocr_root: Path
+    weights_path: Path
+    exp_path: Path
+    image_short_side: int
 
 
 def parse_figure_anchors(markdown: str) -> list[FigureAnchor]:
@@ -60,6 +74,27 @@ def replace_figure_lines(markdown: str, results: list[CropResult]) -> str:
     for result in sorted(results, key=lambda item: item.anchor.line_index, reverse=True):
         lines[result.anchor.line_index] = f"![{result.anchor.description}]({result.rel_path})"
     return "\n".join(lines) + ("\n" if markdown.endswith("\n") else "")
+
+
+def loc_model_config_from_env() -> LocModelConfig | None:
+    weights = os.environ.get("OCR_LOC_WEIGHTS_PATH", "").strip()
+    starry_root = os.environ.get("OCR_LOC_STARRY_OCR_ROOT", "").strip()
+    if not weights or not starry_root:
+        return None
+
+    root = Path(starry_root)
+    exp_path = Path(
+        os.environ.get(
+            "OCR_LOC_EXP_PATH",
+            str(root / "DB_gc_loc/experiments/seg_detector/totaltext_resnet18_deform_thre-eval.yaml"),
+        )
+    )
+    return LocModelConfig(
+        starry_ocr_root=root,
+        weights_path=Path(weights),
+        exp_path=exp_path,
+        image_short_side=int(os.environ.get("OCR_LOC_IMAGE_SHORT_SIDE", "736")),
+    )
 
 
 def _ink_bounds_by_rows(image: Image.Image) -> list[tuple[int, int, int, int]]:
@@ -102,18 +137,24 @@ def _ink_bounds_by_rows(image: Image.Image) -> list[tuple[int, int, int, int]]:
     return bands
 
 
-def _candidate_rects(page: fitz.Page, zoom: float) -> list[fitz.Rect]:
+def _render_page_image(page: fitz.Page, zoom: float) -> Image.Image:
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     mode = "RGB" if pix.n < 4 else "CMYK"
     image = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
     if image.mode != "RGB":
         image = image.convert("RGB")
+    return image
 
+
+def _candidate_rects_from_ink(page: fitz.Page, zoom: float) -> list[fitz.Rect]:
+    image = _render_page_image(page, zoom)
     candidates: list[fitz.Rect] = []
     for y0, y1, x0, x1 in _ink_bounds_by_rows(image):
         band_width = x1 - x0 + 1
         band_height = y1 - y0 + 1
         if band_height < image.height * 0.075:
+            continue
+        if band_height > image.height * 0.45:
             continue
         if band_width < image.width * 0.30:
             continue
@@ -133,6 +174,178 @@ def _candidate_rects(page: fitz.Page, zoom: float) -> list[fitz.Rect]:
     return candidates
 
 
+def _candidate_rects(page: fitz.Page, zoom: float) -> list[fitz.Rect]:
+    return _candidate_rects_from_ink(page, zoom)
+
+
+def _install_loc_paths(config: LocModelConfig) -> None:
+    if str(config.starry_ocr_root) not in sys.path:
+        sys.path.insert(0, str(config.starry_ocr_root))
+
+
+@lru_cache(maxsize=1)
+def _load_loc_model(config: LocModelConfig) -> tuple[Any, Any, Any, Any, Any]:
+    _install_loc_paths(config)
+    import cv2
+    import numpy as np
+    import torch
+    from DB_gc_loc.concern.config import Config, Configurable
+
+    original_cwd = Path.cwd()
+    os.chdir(config.starry_ocr_root)
+    try:
+        args = {
+            "exp": str(config.exp_path),
+            "resume": str(config.weights_path),
+            "image_short_side": config.image_short_side,
+            "box_thresh": 0.01,
+            "polygon": False,
+            "visualize": False,
+            "resize": False,
+            "verbose": False,
+        }
+        conf = Config()
+        experiment_args = conf.compile(conf.load(args["exp"]))["Experiment"]
+        experiment_args.update(cmd=args)
+        experiment = Configurable.construct_class_from_config(experiment_args)
+        experiment.load("evaluation", **experiment_args)
+        structure = experiment.structure
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = structure.builder.build(device)
+        states = torch.load(config.weights_path, map_location=device)
+        model.load_state_dict(states, strict=False)
+        model.eval()
+        return model, device, cv2, np, torch
+    finally:
+        os.chdir(original_cwd)
+
+
+def _text_heatmap_for_image(image: Image.Image, config: LocModelConfig):
+    import torch.nn.functional as F
+
+    model, device, cv2, np, torch = _load_loc_model(config)
+    image_rgb = np.array(image.convert("RGB"))
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    orig_h, orig_w = image_bgr.shape[:2]
+    if orig_h < orig_w:
+        new_h = config.image_short_side
+        new_w = int(math.ceil(new_h / orig_h * orig_w / 32) * 32)
+    else:
+        new_w = config.image_short_side
+        new_h = int(math.ceil(new_w / orig_w * orig_h / 32) * 32)
+
+    rgb_mean = np.array([122.67891434, 116.66876762, 104.00698793])
+    resized = cv2.resize(image_bgr.astype("float32"), (new_w, new_h))
+    normalized = (resized - rgb_mean) / 255.0
+    img_tensor = torch.from_numpy(normalized).permute(2, 0, 1).float().unsqueeze(0).to(device)
+    batch = {"shape": [(orig_h, orig_w)], "image": img_tensor}
+    with torch.no_grad():
+        pred, mcls = model.forward(batch, training=False)
+        binary = pred[0, 0].detach().float().cpu().numpy()
+        classes = F.softmax(mcls, dim=1)[0].detach().float().cpu().numpy().argmax(axis=0).astype(np.uint8)
+
+    binary_orig = cv2.resize(binary, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+    classes_orig = cv2.resize(classes, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+    keep_mask = ~np.isin(classes_orig, list(_EXCLUDED_LOC_CLASSES))
+    return binary_orig * keep_mask.astype(np.float32)
+
+
+def _candidate_rects_from_loc_heatmap(page: fitz.Page, zoom: float, config: LocModelConfig) -> list[fitz.Rect]:
+    import numpy as np
+
+    image = _render_page_image(page, zoom)
+    text_heat = _text_heatmap_for_image(image, config)
+    text_mask = text_heat >= 0.25
+    row_text_density = text_mask.mean(axis=1)
+    text_window = max(9, int(image.height * 0.012))
+    row_text_density = np.convolve(row_text_density, np.ones(text_window) / text_window, mode="same")
+
+    grayscale = np.asarray(image.convert("L"))
+    ink = grayscale < 235
+    row_ink_density = ink.mean(axis=1)
+    music_rows = (row_ink_density >= 0.0025) & (row_text_density <= 0.02)
+
+    runs: list[tuple[int, int, int, int]] = []
+    y = 0
+    while y < image.height:
+        while y < image.height and not music_rows[y]:
+            y += 1
+        start = y
+        while y < image.height and music_rows[y]:
+            y += 1
+        end = y - 1
+        if start >= image.height:
+            break
+
+        run_height = end - start + 1
+        if run_height < max(8, int(image.height * 0.018)):
+            continue
+        if start <= image.height * 0.03 or end >= image.height * 0.96:
+            continue
+
+        segment_ink = ink[start : end + 1, :]
+        ink_columns = segment_ink.mean(axis=0) > 0.003
+        xs = np.flatnonzero(ink_columns)
+        if len(xs) == 0:
+            continue
+        x0 = int(xs[0])
+        x1 = int(xs[-1])
+        if x1 - x0 + 1 < image.width * 0.20:
+            continue
+        runs.append((start, end, x0, x1))
+
+    if not runs:
+        return []
+
+    clusters: list[list[tuple[int, int, int, int]]] = []
+    for run in runs:
+        if not clusters:
+            clusters.append([run])
+            continue
+        previous = clusters[-1][-1]
+        gap = run[0] - previous[1]
+        current_start = clusters[-1][0][0]
+        merged_height = run[1] - current_start + 1
+        if gap <= image.height * 0.045 and merged_height <= image.height * 0.23:
+            clusters[-1].append(run)
+        else:
+            clusters.append([run])
+
+    candidates: list[fitz.Rect] = []
+    for cluster in clusters:
+        start = min(run[0] for run in cluster)
+        end = max(run[1] for run in cluster)
+        x0 = min(run[2] for run in cluster)
+        x1 = max(run[3] for run in cluster)
+        block_height = end - start + 1
+        if block_height < image.height * 0.025:
+            continue
+        if block_height > image.height * 0.28:
+            continue
+        if row_text_density[start : end + 1].mean() > 0.02 and row_ink_density[start : end + 1].mean() < 0.02:
+            continue
+
+        pad_x = int(image.width * 0.012)
+        pad_y = int(image.height * 0.006)
+        rect = fitz.Rect(
+            max(0, x0 - pad_x) / zoom,
+            max(0, start - pad_y) / zoom,
+            min(image.width, x1 + pad_x) / zoom,
+            min(image.height, end + pad_y) / zoom,
+        )
+        candidates.append(rect)
+    return candidates
+
+
+def _heuristic_rects(page: fitz.Page, zoom: float, loc_config: LocModelConfig | None) -> list[fitz.Rect]:
+    if loc_config is None:
+        return _candidate_rects_from_ink(page, zoom)
+    try:
+        return _candidate_rects_from_loc_heatmap(page, zoom, loc_config)
+    except Exception:
+        return _candidate_rects_from_ink(page, zoom)
+
+
 def _full_page_rect(page: fitz.Page) -> fitz.Rect:
     return fitz.Rect(page.rect)
 
@@ -149,7 +362,8 @@ def _union_rects(rects: list[fitz.Rect]) -> fitz.Rect:
 def _assign_rects_to_figures(rects: list[fitz.Rect], figure_count: int) -> list[fitz.Rect]:
     if len(rects) <= figure_count:
         return rects
-    return rects[: figure_count - 1] + [_union_rects(rects[figure_count - 1 :])]
+    selected = sorted(rects, key=lambda rect: rect.height, reverse=True)[:figure_count]
+    return sorted(selected, key=lambda rect: rect.y0)
 
 
 def crop_figures(
@@ -160,12 +374,16 @@ def crop_figures(
     jpeg_quality: int,
     mode: str,
     write_markdown: bool,
+    loc_model_config: LocModelConfig | None = None,
 ) -> list[CropResult]:
     markdown_path = Path(markdown_path)
     markdown = markdown_path.read_text(encoding="utf-8")
     anchors = parse_figure_anchors(markdown)
     assets_dir = markdown_writer.asset_dir_for(markdown_path, assets_dir_name)
     results: list[CropResult] = []
+
+    if loc_model_config is None:
+        loc_model_config = loc_model_config_from_env()
 
     doc = open_document(pdf_path)
     try:
@@ -179,7 +397,7 @@ def crop_figures(
             if mode == "heuristic":
                 if anchor.page_number not in rects_by_page:
                     rects_by_page[anchor.page_number] = _assign_rects_to_figures(
-                        _candidate_rects(page, zoom), anchor_counts_by_page[anchor.page_number]
+                        _heuristic_rects(page, zoom, loc_model_config), anchor_counts_by_page[anchor.page_number]
                     )
                 page_rects = rects_by_page[anchor.page_number]
                 if anchor.figure_index > len(page_rects):
