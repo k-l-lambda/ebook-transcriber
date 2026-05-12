@@ -5,6 +5,7 @@ from ebook_transcriber.figure_crops import (
     CropResult,
     FigureAnchor,
     _assign_rects_to_figures,
+    _group_consecutive_anchors_for_rects,
     _merge_relaxed_rects,
     parse_figure_anchors,
     replace_figure_lines,
@@ -63,6 +64,85 @@ text
 ![second](assets/page008_fig02.jpg)
 """,
         )
+    def test_replace_figure_lines_removes_merged_anchor_lines(self):
+        markdown = """<!-- page 8 -->
+
+[Figure: first]
+
+[Figure: second]
+
+text
+
+[Figure: third]
+"""
+        first = FigureAnchor(2, 8, 1, "first")
+        second = FigureAnchor(4, 8, 2, "second")
+        third = FigureAnchor(8, 8, 3, "third")
+        results = [
+            CropResult(first, None, "assets/page008_fig01.jpg", None, False, (first, second)),
+            CropResult(third, None, "assets/page008_fig03.jpg", None, False, (third,)),
+        ]
+        self.assertEqual(
+            replace_figure_lines(markdown, results),
+            """<!-- page 8 -->
+
+![first](assets/page008_fig01.jpg)
+
+
+text
+
+![third](assets/page008_fig03.jpg)
+""",
+        )
+
+    def test_group_consecutive_anchors_merges_blank_separated_figures(self):
+        markdown = """<!-- page 8 -->
+
+[Figure: first]
+
+[Figure: second]
+
+text
+
+[Figure: third]
+"""
+        anchors = parse_figure_anchors(markdown)
+        groups = _group_consecutive_anchors_for_rects(markdown.splitlines(), anchors, 2)
+        self.assertEqual(
+            [[anchor.figure_index for anchor in group] for group in groups],
+            [[1, 2], [3]],
+        )
+
+    def test_group_consecutive_anchors_does_not_merge_across_text(self):
+        markdown = """<!-- page 8 -->
+
+[Figure: first]
+
+text
+
+[Figure: second]
+"""
+        anchors = parse_figure_anchors(markdown)
+        groups = _group_consecutive_anchors_for_rects(markdown.splitlines(), anchors, 1)
+        self.assertEqual(
+            [[anchor.figure_index for anchor in group] for group in groups],
+            [[1], [2]],
+        )
+
+    def test_group_consecutive_anchors_keeps_groups_when_rects_are_sufficient(self):
+        markdown = """<!-- page 8 -->
+
+[Figure: first]
+
+[Figure: second]
+"""
+        anchors = parse_figure_anchors(markdown)
+        groups = _group_consecutive_anchors_for_rects(markdown.splitlines(), anchors, 2)
+        self.assertEqual(
+            [[anchor.figure_index for anchor in group] for group in groups],
+            [[1], [2]],
+        )
+
     def test_assign_rects_to_figures_keeps_short_candidate_list(self):
         rects = [fitz.Rect(1, 2, 3, 4), fitz.Rect(5, 6, 7, 8)]
         self.assertEqual(_assign_rects_to_figures(rects, 3), rects)

@@ -35,6 +35,7 @@ class CropResult:
     rel_path: str
     rect: fitz.Rect
     fallback: bool
+    merged_anchors: tuple[FigureAnchor, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,9 @@ def parse_figure_anchors(markdown: str) -> list[FigureAnchor]:
 def replace_figure_lines(markdown: str, results: list[CropResult]) -> str:
     lines = markdown.splitlines()
     for result in sorted(results, key=lambda item: item.anchor.line_index, reverse=True):
+        for merged_anchor in sorted(result.merged_anchors, key=lambda item: item.line_index, reverse=True):
+            if merged_anchor.line_index != result.anchor.line_index:
+                lines.pop(merged_anchor.line_index)
         lines[result.anchor.line_index] = f"![{result.anchor.description}]({result.rel_path})"
     return "\n".join(lines) + ("\n" if markdown.endswith("\n") else "")
 
@@ -473,6 +477,31 @@ def _assign_rects_to_figures(rects: list[fitz.Rect], figure_count: int) -> list[
     return sorted(selected, key=lambda rect: rect.y0)
 
 
+def _group_consecutive_anchors_for_rects(
+    markdown_lines: list[str], page_anchors: list[FigureAnchor], rect_count: int
+) -> list[tuple[FigureAnchor, ...]]:
+    groups: list[tuple[FigureAnchor, ...]] = [(anchor,) for anchor in page_anchors]
+    if rect_count <= 0 or len(groups) <= rect_count:
+        return groups
+
+    while len(groups) > rect_count:
+        merge_index: int | None = None
+        for index in range(len(groups) - 1):
+            first = groups[index][-1]
+            second = groups[index + 1][0]
+            if second.figure_index != first.figure_index + 1:
+                continue
+            between = markdown_lines[first.line_index + 1 : second.line_index]
+            if all(not line.strip() for line in between):
+                merge_index = index
+                break
+        if merge_index is None:
+            break
+        groups[merge_index] = groups[merge_index] + groups[merge_index + 1]
+        del groups[merge_index + 1]
+    return groups
+
+
 def crop_figures(
     pdf_path: str | Path,
     markdown_path: str | Path,
@@ -495,45 +524,51 @@ def crop_figures(
     doc = open_document(pdf_path)
     try:
         rects_by_page: dict[int, list[fitz.Rect]] = {}
-        anchor_counts_by_page: dict[int, int] = {}
+        anchors_by_page: dict[int, list[FigureAnchor]] = {}
         for anchor in anchors:
-            anchor_counts_by_page[anchor.page_number] = anchor_counts_by_page.get(anchor.page_number, 0) + 1
+            anchors_by_page.setdefault(anchor.page_number, []).append(anchor)
 
-        for anchor in anchors:
-            page = doc[anchor.page_number - 1]
+        markdown_lines = markdown.splitlines()
+        for page_number, page_anchors in anchors_by_page.items():
+            page = doc[page_number - 1]
             if mode == "heuristic":
-                if anchor.page_number not in rects_by_page:
-                    rects_by_page[anchor.page_number] = _assign_rects_to_figures(
+                if page_number not in rects_by_page:
+                    rects_by_page[page_number] = _assign_rects_to_figures(
                         _heuristic_rects(
                             page,
                             zoom,
                             loc_model_config,
-                            anchor_counts_by_page[anchor.page_number],
+                            len(page_anchors),
                         ),
-                        anchor_counts_by_page[anchor.page_number],
+                        len(page_anchors),
                     )
-                page_rects = rects_by_page[anchor.page_number]
-                if anchor.figure_index > len(page_rects):
+                page_rects = rects_by_page[page_number]
+                anchor_groups = _group_consecutive_anchors_for_rects(markdown_lines, page_anchors, len(page_rects))
+            else:
+                page_rects = [_full_page_rect(page) for _ in page_anchors]
+                anchor_groups = [(anchor,) for anchor in page_anchors]
+
+            for group_index, anchor_group in enumerate(anchor_groups):
+                anchor = anchor_group[0]
+                if mode == "heuristic" and group_index >= len(page_rects):
                     fallback = True
                     rect = _full_page_rect(page)
                 else:
                     fallback = False
-                    rect = page_rects[anchor.figure_index - 1]
-            else:
-                fallback = False
-                rect = _full_page_rect(page)
+                    rect = page_rects[group_index]
 
-            asset_path = assets_dir / f"page{anchor.page_number:03d}_fig{anchor.figure_index:02d}.jpg"
-            render_clip_to_file(page, rect, asset_path, zoom, jpeg_quality)
-            results.append(
-                CropResult(
-                    anchor=anchor,
-                    asset_path=asset_path,
-                    rel_path=markdown_writer.relative_asset_path(markdown_path, asset_path),
-                    rect=rect,
-                    fallback=fallback,
+                asset_path = assets_dir / f"page{anchor.page_number:03d}_fig{anchor.figure_index:02d}.jpg"
+                render_clip_to_file(page, rect, asset_path, zoom, jpeg_quality)
+                results.append(
+                    CropResult(
+                        anchor=anchor,
+                        asset_path=asset_path,
+                        rel_path=markdown_writer.relative_asset_path(markdown_path, asset_path),
+                        rect=rect,
+                        fallback=fallback,
+                        merged_anchors=anchor_group,
+                    )
                 )
-            )
     finally:
         doc.close()
 
