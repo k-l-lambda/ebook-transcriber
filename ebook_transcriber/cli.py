@@ -7,7 +7,7 @@ import click
 
 from .config import env_float, env_int, env_str, load_project_env
 from .figure_crops import crop_figures
-from .llm_crop import find_crop_with_llm, parse_normalized_rect
+from .llm_crop import find_crop_with_llm, parse_normalized_rect, read_llm_crop_jobs_tsv, run_llm_crop_jobs
 from .markdown_writer import default_output_path
 from .pipeline import ConvertOptions, convert_pdf
 from .segments import read_segments, safe_segment_filename, write_index_markdown
@@ -266,6 +266,74 @@ def llm_crop_command(
         f"wrote {result.output_path}; rect={rect.x0:.4f},{rect.y0:.4f},{rect.x1:.4f},{rect.y1:.4f}; "
         f"iterations={len(result.iterations)}"
     )
+
+
+@main.command("llm-crop-batch")
+@click.argument("pdf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("jobs_tsv", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--output-dir", required=True, type=click.Path(file_okay=False, path_type=Path), help="Directory for output JPEG crops.")
+@click.option("--prompt-template", help="Optional Python format template using {page}, {figure}, {asset}, and {description}.")
+@click.option("--region", default="0,0,1,1", show_default=True, help="Starting normalized full-page rectangle x0,y0,x1,y1.")
+@click.option("--model", default=lambda: env_str("MODEL", "deepseek/deepseek-v4-pro"), show_default="env MODEL or deepseek/deepseek-v4-pro", help="OpenAI-compatible vision model name.")
+@click.option("--zoom", default=lambda: env_float("ZOOM", 2.0), show_default="env ZOOM or 2.0", type=float, help="PDF render zoom factor.")
+@click.option("--jpeg-quality", default=lambda: env_int("JPEG_QUALITY", 85), show_default="env JPEG_QUALITY or 85", type=click.IntRange(1, 100), help="JPEG quality for rendered crop images.")
+@click.option("--max-iterations", default=6, show_default=True, type=click.IntRange(1), help="Maximum LLM refinement iterations per job.")
+@click.option("--min-change-ratio", default=0.01, show_default=True, type=float, help="Stop when normalized rectangle changes less than this amount.")
+@click.option("--max-concurrency", default=lambda: env_int("MAX_CONCURRENCY", 3), show_default="env MAX_CONCURRENCY or 3", type=click.IntRange(1), help="Maximum number of crop jobs to run concurrently.")
+@click.option("--save-iterations", type=click.Path(file_okay=False, path_type=Path), help="Directory for per-job intermediate candidate crop images.")
+@click.option("--no-json-output", is_flag=True, help="Do not write per-crop JSON metadata files.")
+@click.option("--skip-existing", is_flag=True, help="Skip jobs whose output image and JSON already exist.")
+@click.option("--verbose", "verbose", "-v", is_flag=True, help="Print per-iteration rectangle and rationale.")
+def llm_crop_batch_command(
+    pdf_path: Path,
+    jobs_tsv: Path,
+    output_dir: Path,
+    prompt_template: str | None,
+    region: str,
+    model: str,
+    zoom: float,
+    jpeg_quality: int,
+    max_iterations: int,
+    min_change_ratio: float,
+    max_concurrency: int,
+    save_iterations: Path | None,
+    no_json_output: bool,
+    skip_existing: bool,
+    verbose: bool,
+) -> None:
+    """Run multiple LLM crop jobs concurrently from a TSV file."""
+    try:
+        start_rect = parse_normalized_rect(region)
+        jobs = read_llm_crop_jobs_tsv(
+            jobs_tsv,
+            output_dir,
+            prompt_template=prompt_template,
+            json_output=not no_json_output,
+            default_region=start_rect,
+            save_iterations_dir=save_iterations,
+        )
+        results = run_llm_crop_jobs(
+            pdf_path=pdf_path,
+            jobs=jobs,
+            model=model,
+            zoom=zoom,
+            jpeg_quality=jpeg_quality,
+            max_iterations=max_iterations,
+            min_change_ratio=min_change_ratio,
+            max_concurrency=max_concurrency,
+            skip_existing=skip_existing,
+            verbose=verbose,
+            progress=click.echo,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    failures = [item for item in results if item.error]
+    completed = [item for item in results if item.result]
+    skipped = len(results) - len(completed) - len(failures)
+    click.echo(f"llm-crop-batch complete: completed={len(completed)} skipped={skipped} failed={len(failures)}")
+    if failures:
+        raise click.ClickException("crop failures: " + "; ".join(f"{item.job.output_path.name}: {item.error}" for item in failures))
 
 
 if __name__ == "__main__":

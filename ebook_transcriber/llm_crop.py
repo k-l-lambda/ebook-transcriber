@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import fitz
 
@@ -35,6 +37,27 @@ class LlmCropResult:
     final_rect: NormalizedRect
     output_path: Path
     iterations: tuple[CropIteration, ...]
+
+
+@dataclass(frozen=True)
+class LlmCropJob:
+    page_number: int
+    figure_index: str
+    output_path: Path
+    prompt: str
+    start_rect: NormalizedRect | None = None
+    json_output_path: Path | None = None
+    save_iterations_dir: Path | None = None
+
+
+@dataclass(frozen=True)
+class LlmCropJobResult:
+    job: LlmCropJob
+    result: LlmCropResult | None
+    error: str | None = None
+
+
+ProgressCallback = Callable[[str], None]
 
 
 def parse_normalized_rect(value: str) -> NormalizedRect:
@@ -180,6 +203,78 @@ def write_result_json(path: str | Path, result: LlmCropResult) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _default_batch_prompt(figure_index: str, description: str) -> str:
+    target = f"figure {figure_index}"
+    if description:
+        target += f": {description}"
+    return (
+        f"Crop {target} only on this page. Include the complete visual figure with a small margin. "
+        "Exclude captions, page numbers, headers, footers, and surrounding prose."
+    )
+
+
+def read_llm_crop_jobs_tsv(
+    path: str | Path,
+    output_dir: str | Path,
+    prompt_template: str | None = None,
+    json_output: bool = True,
+    default_region: NormalizedRect | None = None,
+    save_iterations_dir: str | Path | None = None,
+) -> list[LlmCropJob]:
+    output_dir = Path(output_dir)
+    save_root = Path(save_iterations_dir) if save_iterations_dir else None
+    jobs: list[LlmCropJob] = []
+    with Path(path).open(encoding="utf-8") as handle:
+        sample = handle.read(4096)
+        handle.seek(0)
+        has_header = "asset" in sample.splitlines()[0].split("\t") if sample.splitlines() else False
+        if has_header:
+            reader = csv.DictReader(handle, delimiter="\t")
+            for row in reader:
+                page = row.get("page") or row.get("page_number")
+                figure = row.get("figure") or row.get("figure_index") or row.get("fig") or "1"
+                asset = row.get("asset") or row.get("filename") or row.get("output")
+                description = row.get("description") or row.get("prompt") or ""
+                if not page or not asset:
+                    raise ValueError("TSV rows must include page and asset columns")
+                prompt = prompt_template.format(page=page, figure=figure, asset=asset, description=description) if prompt_template else _default_batch_prompt(figure, description)
+                output_path = output_dir / asset
+                jobs.append(
+                    LlmCropJob(
+                        page_number=int(page),
+                        figure_index=str(figure),
+                        output_path=output_path,
+                        prompt=prompt,
+                        start_rect=default_region,
+                        json_output_path=output_path.with_suffix(".json") if json_output else None,
+                        save_iterations_dir=(save_root / output_path.stem) if save_root else None,
+                    )
+                )
+        else:
+            reader = csv.reader(handle, delimiter="\t")
+            for row in reader:
+                if len(row) < 4:
+                    continue
+                page = row[1]
+                figure = row[2]
+                asset = row[3]
+                description = row[4] if len(row) > 4 else ""
+                prompt = prompt_template.format(page=page, figure=figure, asset=asset, description=description) if prompt_template else _default_batch_prompt(figure, description)
+                output_path = output_dir / asset
+                jobs.append(
+                    LlmCropJob(
+                        page_number=int(page),
+                        figure_index=str(figure),
+                        output_path=output_path,
+                        prompt=prompt,
+                        start_rect=default_region,
+                        json_output_path=output_path.with_suffix(".json") if json_output else None,
+                        save_iterations_dir=(save_root / output_path.stem) if save_root else None,
+                    )
+                )
+    return jobs
+
+
 def find_crop_with_llm(
     pdf_path: str | Path,
     page_number: int,
@@ -244,3 +339,64 @@ def find_crop_with_llm(
     if json_output_path:
         write_result_json(json_output_path, result)
     return result
+
+
+def run_llm_crop_jobs(
+    pdf_path: str | Path,
+    jobs: list[LlmCropJob],
+    model: str,
+    zoom: float = 2.0,
+    jpeg_quality: int = 85,
+    max_iterations: int = 6,
+    min_change_ratio: float = 0.01,
+    max_concurrency: int = 1,
+    skip_existing: bool = False,
+    verbose: bool = False,
+    progress: ProgressCallback | None = None,
+) -> list[LlmCropJobResult]:
+    if max_concurrency < 1:
+        raise ValueError("max_concurrency must be at least 1")
+
+    def emit(message: str) -> None:
+        if progress:
+            progress(message)
+
+    def run_job(index: int, job: LlmCropJob) -> LlmCropJobResult:
+        if skip_existing and job.output_path.exists() and (job.json_output_path is None or job.json_output_path.exists()):
+            emit(f"[{index}/{len(jobs)}] skip {job.output_path.name}")
+            return LlmCropJobResult(job=job, result=None)
+        emit(f"[{index}/{len(jobs)}] start {job.output_path.name} page={job.page_number} figure={job.figure_index}")
+        try:
+            result = find_crop_with_llm(
+                pdf_path=pdf_path,
+                page_number=job.page_number,
+                user_prompt=job.prompt,
+                output_path=job.output_path,
+                model=model,
+                start_rect=job.start_rect,
+                zoom=zoom,
+                jpeg_quality=jpeg_quality,
+                max_iterations=max_iterations,
+                min_change_ratio=min_change_ratio,
+                save_iterations_dir=job.save_iterations_dir,
+                json_output_path=job.json_output_path,
+                verbose=verbose,
+            )
+        except Exception as exc:
+            emit(f"[{index}/{len(jobs)}] failed {job.output_path.name}: {exc}")
+            return LlmCropJobResult(job=job, result=None, error=str(exc))
+        emit(f"[{index}/{len(jobs)}] done {result.output_path}")
+        return LlmCropJobResult(job=job, result=result)
+
+    if not jobs:
+        return []
+    worker_count = min(max_concurrency, len(jobs))
+    if worker_count == 1:
+        return [run_job(index, job) for index, job in enumerate(jobs, 1)]
+
+    results: list[LlmCropJobResult | None] = [None] * len(jobs)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {executor.submit(run_job, index, job): index - 1 for index, job in enumerate(jobs, 1)}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+    return [result for result in results if result is not None]

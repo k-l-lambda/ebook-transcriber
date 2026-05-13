@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import fitz
 
@@ -10,6 +12,7 @@ from ebook_transcriber.llm_crop import (
     parse_model_response,
     parse_normalized_rect,
     pdf_to_normalized_rect,
+    read_llm_crop_jobs_tsv,
     rect_delta_ratio,
 )
 
@@ -54,6 +57,28 @@ class LlmCropTests(unittest.TestCase):
             rect_delta_ratio(NormalizedRect(0.1, 0.2, 0.8, 0.9), NormalizedRect(0.1, 0.25, 0.75, 0.9)),
             0.05,
         )
+
+    def test_read_llm_crop_jobs_tsv_without_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tsv = tmp_path / "jobs.tsv"
+            tsv.write_text("83\t7\t1\tpage007_fig01.jpg\tEgyptian numerals\n", encoding="utf-8")
+            jobs = read_llm_crop_jobs_tsv(tsv, tmp_path / "out")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].page_number, 7)
+        self.assertEqual(jobs[0].figure_index, "1")
+        self.assertEqual(jobs[0].output_path.name, "page007_fig01.jpg")
+        self.assertEqual(jobs[0].json_output_path.name, "page007_fig01.json")
+        self.assertIn("Egyptian numerals", jobs[0].prompt)
+
+    def test_read_llm_crop_jobs_tsv_with_header_and_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tsv = tmp_path / "jobs.tsv"
+            tsv.write_text("page\tfigure_index\tasset\tdescription\n10\t2\tfig.jpg\tdiagram\n", encoding="utf-8")
+            jobs = read_llm_crop_jobs_tsv(tsv, tmp_path / "out", prompt_template="p{page} f{figure} {asset} {description}")
+        self.assertEqual(jobs[0].page_number, 10)
+        self.assertEqual(jobs[0].prompt, "p10 f2 fig.jpg diagram")
 
 
 if __name__ == "__main__":
