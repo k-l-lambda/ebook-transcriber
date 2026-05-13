@@ -7,6 +7,7 @@ import click
 
 from .config import env_float, env_int, env_str, load_project_env
 from .figure_crops import crop_figures
+from .llm_crop import find_crop_with_llm, parse_normalized_rect
 from .markdown_writer import default_output_path
 from .pipeline import ConvertOptions, convert_pdf
 from .segments import read_segments, safe_segment_filename, write_index_markdown
@@ -208,6 +209,63 @@ def crop_figures_command(
             )
     action = "cropped and updated" if write_markdown else "cropped"
     click.echo(f"{action} {len(results)} figure(s) for {markdown_path}")
+
+
+@main.command("llm-crop")
+@click.argument("pdf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("page", type=click.IntRange(1))
+@click.option("--prompt", "user_prompt", required=True, help="Description of the target visual content to crop.")
+@click.option("--output", "output_path", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Output JPEG crop path.")
+@click.option("--region", default="0,0,1,1", show_default=True, help="Starting normalized full-page rectangle x0,y0,x1,y1.")
+@click.option("--model", default=lambda: env_str("MODEL", "deepseek/deepseek-v4-pro"), show_default="env MODEL or deepseek/deepseek-v4-pro", help="OpenAI-compatible vision model name.")
+@click.option("--zoom", default=lambda: env_float("ZOOM", 2.0), show_default="env ZOOM or 2.0", type=float, help="PDF render zoom factor.")
+@click.option("--jpeg-quality", default=lambda: env_int("JPEG_QUALITY", 85), show_default="env JPEG_QUALITY or 85", type=click.IntRange(1, 100), help="JPEG quality for rendered crop images.")
+@click.option("--max-iterations", default=6, show_default=True, type=click.IntRange(1), help="Maximum LLM refinement iterations.")
+@click.option("--min-change-ratio", default=0.01, show_default=True, type=float, help="Stop when normalized rectangle changes less than this amount.")
+@click.option("--save-iterations", type=click.Path(file_okay=False, path_type=Path), help="Directory for intermediate candidate crop images.")
+@click.option("--json-output", type=click.Path(dir_okay=False, path_type=Path), help="Optional JSON metadata output path.")
+@click.option("--verbose", "verbose", "-v", is_flag=True, help="Print per-iteration rectangle and rationale.")
+def llm_crop_command(
+    pdf_path: Path,
+    page: int,
+    user_prompt: str,
+    output_path: Path,
+    region: str,
+    model: str,
+    zoom: float,
+    jpeg_quality: int,
+    max_iterations: int,
+    min_change_ratio: float,
+    save_iterations: Path | None,
+    json_output: Path | None,
+    verbose: bool,
+) -> None:
+    """Iteratively find a PDF crop rectangle with a multimodal LLM."""
+    try:
+        start_rect = parse_normalized_rect(region)
+        result = find_crop_with_llm(
+            pdf_path=pdf_path,
+            page_number=page,
+            user_prompt=user_prompt,
+            output_path=output_path,
+            model=model,
+            start_rect=start_rect,
+            zoom=zoom,
+            jpeg_quality=jpeg_quality,
+            max_iterations=max_iterations,
+            min_change_ratio=min_change_ratio,
+            save_iterations_dir=save_iterations,
+            json_output_path=json_output,
+            verbose=verbose,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    rect = result.final_rect
+    click.echo(
+        f"wrote {result.output_path}; rect={rect.x0:.4f},{rect.y0:.4f},{rect.x1:.4f},{rect.y1:.4f}; "
+        f"iterations={len(result.iterations)}"
+    )
 
 
 if __name__ == "__main__":
