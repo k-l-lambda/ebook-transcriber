@@ -8,6 +8,7 @@ import click
 from .config import env_float, env_int, env_str, load_project_env
 from .figure_crops import crop_figures
 from .llm_crop import find_crop_with_llm, parse_normalized_rect, read_llm_crop_jobs_tsv, run_llm_crop_jobs
+from .markdown_translator import TranslateMarkdownOptions, translate_markdown_tree
 from .markdown_writer import default_output_path
 from .pipeline import ConvertOptions, convert_pdf
 from .segments import read_segments, safe_segment_filename, write_index_markdown
@@ -165,6 +166,48 @@ def convert_segments(
                 click.echo(f"segment {segment.id} failed: {exc}", err=True)
     if failures:
         raise click.ClickException("segment failures: " + "; ".join(failures))
+
+
+@main.command("translate-markdown")
+@click.argument("input_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("output_path", type=click.Path(path_type=Path))
+@click.option("--model", default=lambda: env_str("MODEL", "deepseek/deepseek-v4-pro"), show_default="env MODEL or deepseek/deepseek-v4-pro", help="OpenAI-compatible model name.")
+@click.option("--output-language", default=lambda: env_str("OUTPUT_LANGUAGE", "zh"), show_default="env OUTPUT_LANGUAGE or zh", help="Translate Markdown prose to this language.")
+@click.option("--pages", default=None, help="Page range within each Markdown file, e.g. 1, 1-5, or 1,3,8-10.")
+@click.option("--max-concurrency", default=lambda: env_int("MAX_CONCURRENCY", 3), show_default="env MAX_CONCURRENCY or 3", type=click.IntRange(1), help="Maximum number of Markdown files to translate concurrently.")
+@click.option("--restart", is_flag=True, help="Clear translated Markdown and checkpoints before translating.")
+@click.option("--dry-run", is_flag=True, help="List files/pages without calling the API.")
+@click.option("--verbose", "-v", is_flag=True, help="Print per-file and per-page progress.")
+def translate_markdown_command(
+    input_path: Path,
+    output_path: Path,
+    model: str,
+    output_language: str,
+    pages: str | None,
+    max_concurrency: int,
+    restart: bool,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    """Translate Markdown file(s) page-by-page with the text LLM API."""
+    options = TranslateMarkdownOptions(
+        input_path=input_path,
+        output_path=output_path,
+        model=model,
+        output_language=output_language,
+        pages=pages,
+        restart=restart,
+        dry_run=dry_run,
+        verbose=verbose,
+        max_concurrency=max_concurrency,
+    )
+    try:
+        outputs = translate_markdown_tree(options, progress=click.echo)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    action = "dry run complete" if dry_run else "translated"
+    click.echo(f"{action} {len(outputs)} file(s) -> {output_path}")
 
 
 @main.command("crop-figures")

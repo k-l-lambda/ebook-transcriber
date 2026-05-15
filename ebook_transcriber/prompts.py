@@ -1,3 +1,18 @@
+def markdown_translation_prompt(markdown: str, output_language: str) -> str:
+    return f"""Translate this Markdown page to {output_language}.
+
+Rules:
+- Preserve Markdown structure, headings, lists, tables, footnotes, blockquotes, code blocks, mathematical notation, image links, HTML comments, URLs, file paths, citation labels, and asset paths.
+- Translate prose, headings, captions, footnotes, and explanatory text.
+- Keep code identifiers, formulas, URLs, file paths, citation keys, and image paths unchanged.
+- Do not add commentary about the task.
+- Output only the translated Markdown.
+
+Markdown:
+{markdown}
+"""
+
+
 VISION_SMOKE_PROMPT = """Read this PDF page image and return only this JSON shape:
 {"vision_supported": true, "visible_title": "<short visible title or first heading>"}
 If you cannot read the image, return {"vision_supported": false, "visible_title": ""}.

@@ -39,3 +39,12 @@ class LLMClient:
         )
         content = response.choices[0].message.content
         return content or ""
+
+    def text_chat(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        content = response.choices[0].message.content
+        return content or ""
